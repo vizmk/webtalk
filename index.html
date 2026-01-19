@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>linkat@ monitor</title>
+  <style>
+    :root{
+      --bg:#0b0f14;
+      --panel:rgba(17,24,38,.92);
+      --line:rgba(255,255,255,.08);
+      --muted:rgba(255,255,255,.72);
+      --barH:52px;
+    }
+    html,body{
+      height:100%;
+      margin:0;
+      background:var(--bg);
+      color:#fff;
+      font-family:system-ui,Arial;
+      overflow:hidden;
+    }
+    .bar{
+      position:fixed; top:0; left:0; right:0;
+      height:var(--barH);
+      display:flex; justify-content:space-between; align-items:center;
+      padding:10px 14px; box-sizing:border-box;
+      background:var(--panel);
+      border-bottom:1px solid var(--line);
+      backdrop-filter: blur(8px);
+      z-index:9999;
+    }
+    .left{ display:flex; align-items:baseline; gap:10px; min-width:0; }
+    #siteName{ font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:65vw; }
+    .brand{ font-size:12px; color:var(--muted); letter-spacing:.06em; user-select:none; }
+    .right{ color:var(--muted); font-size:12px; font-variant-numeric: tabular-nums; white-space:nowrap; }
+
+    .progressWrap{
+      position:fixed; left:0; right:0; top:var(--barH);
+      height:3px; background:rgba(255,255,255,.06);
+      z-index:9998;
+    }
+    .progress{
+      height:100%; width:0%;
+      background:rgba(255,255,255,.65);
+      transition: width 120ms linear;
+    }
+
+    .viewport{
+      position:fixed;
+      top:calc(var(--barH) + 3px);
+      left:0; right:0; bottom:0;
+      overflow:hidden;
+      background:var(--bg);
+    }
+
+    iframe{
+      position:absolute;
+      top:0; left:0;
+      width:100%;
+      border:0;
+      background:var(--bg);
+      transform: translateY(0) scale(1);
+      will-change: transform, opacity;
+      opacity:1;
+      transition: opacity 520ms ease, transform 520ms ease;
+    }
+
+    .fade{
+      position:absolute; inset:0;
+      background:var(--bg);
+      opacity:0; pointer-events:none;
+      transition: opacity 520ms ease;
+      z-index:5;
+    }
+    .fade.on{ opacity:1; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="left">
+      <div id="siteName">…</div>
+      <div class="brand">linkat@</div>
+    </div>
+    <div class="right" id="clock"></div>
+  </div>
+
+  <div class="progressWrap"><div class="progress" id="progress"></div></div>
+
+  <div class="viewport" id="viewport">
+    <div class="fade" id="fade"></div>
+    <iframe id="frame" referrerpolicy="no-referrer"></iframe>
+  </div>
+
+  <script>
+    const SITES = [
+      { name: "MateraNews", url: "https://www.materanews.net/" },
+      { name: "SassiLive",  url: "https://www.sassilive.it/" },
+      { name: "TRMtv",      url: "https://www.trmtv.it/" },
+      { name: "Meteo Matera (MeteoAM)", url: "https://www.meteoam.it/it/meteo-citta/matera" }
+    ];
+
+    // ====== SETTAGGI “STABILI” ======
+    const SECONDS_PER_SITE = 35;       // tempo su ogni sito (non troppo corto)
+    const SWITCH_FADE_MS = 520;
+
+    const LOAD_GRACE_MS = 2500;        // tempo per far caricare prima di muovere
+    const IFRAME_HEIGHT_FACTOR = 2.4;  // iframe alto per evitare nero
+    const SCROLL_SPEED_PX_S = 18;      // velocità scroll "lenta" (px/sec)
+    const SCROLL_TARGET_RATIO = 0.90;  // non arrivare proprio al fondo
+    // =================================
+
+    const frame = document.getElementById("frame");
+    const siteName = document.getElementById("siteName");
+    const fade = document.getElementById("fade");
+    const viewport = document.getElementById("viewport");
+    const progress = document.getElementById("progress");
+
+    let idx = 0;
+    let siteTimer = null;
+    let scrollTimer = null;
+    let progressTimer = null;
+
+    function tickClock(){
+      const now = new Date();
+      document.getElementById("clock").textContent =
+        now.toLocaleString("it-IT", { weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
+    }
+    setInterval(tickClock, 1000); tickClock();
+
+    function stopTimers(){
+      if (siteTimer) clearTimeout(siteTimer);
+      if (scrollTimer) clearInterval(scrollTimer);
+      if (progressTimer) clearInterval(progressTimer);
+      siteTimer = scrollTimer = progressTimer = null;
+    }
+
+    function setFade(on){ fade.classList.toggle("on", !!on); }
+
+    function setIframeHeight(){
+      const vh = viewport.clientHeight;
+      frame.style.height = Math.round(vh * IFRAME_HEIGHT_FACTOR) + "px";
+    }
+
+    function startProgress(){
+      progress.style.width = "0%";
+      const start = Date.now();
+      const total = SECONDS_PER_SITE * 1000;
+      progressTimer = setInterval(() => {
+        const pct = Math.max(0, Math.min(100, ((Date.now() - start) / total) * 100));
+        progress.style.width = pct.toFixed(2) + "%";
+        if (pct >= 100) {
+          clearInterval(progressTimer);
+          progressTimer = null;
+        }
+      }, 120);
+    }
+
+    function startFakeScroll(){
+      // reset
+      setIframeHeight();
+      frame.style.transform = "translateY(0px) scale(1)";
+
+      const vh = viewport.clientHeight;
+      const iframeH = Math.round(vh * IFRAME_HEIGHT_FACTOR);
+      const maxScroll = Math.max(0, iframeH - vh);
+      const target = Math.floor(maxScroll * SCROLL_TARGET_RATIO);
+
+      const intervalMs = 50; // tick più lento = più morbido
+      const stepPx = (SCROLL_SPEED_PX_S * intervalMs) / 1000;
+
+      let current = 0;
+      scrollTimer = setInterval(() => {
+        current = Math.min(target, current + stepPx);
+        frame.style.transform = `translateY(${-current}px) scale(1)`;
+        if (current >= target) {
+          clearInterval(scrollTimer);
+          scrollTimer = null;
+        }
+      }, intervalMs);
+    }
+
+    function show(i){
+      stopTimers();
+      startProgress();
+
+      idx = (i + SITES.length) % SITES.length;
+      const s = SITES[idx];
+      siteName.textContent = s.name;
+
+      setFade(true);
+      frame.style.opacity = "0";
+      frame.style.transform = "translateY(0px) scale(0.995)";
+
+      setTimeout(() => {
+        setIframeHeight();
+        frame.src = s.url;
+
+        setTimeout(() => {
+          setFade(false);
+          frame.style.opacity = "1";
+          frame.style.transform = "translateY(0px) scale(1)";
+
+          // aspetta che carichi un minimo e poi scroll lento
+          setTimeout(startFakeScroll, LOAD_GRACE_MS);
+
+          // cambia sito SOLO dopo SECONDS_PER_SITE
+          siteTimer = setTimeout(() => show(idx + 1), SECONDS_PER_SITE * 1000);
+        }, 200);
+      }, SWITCH_FADE_MS);
+    }
+
+    window.addEventListener("resize", () => {
+      setIframeHeight();
+      frame.style.transform = "translateY(0px) scale(1)";
+    });
+
+    show(0);
+  </script>
+</body>
+</html>
+
